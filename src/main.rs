@@ -30,13 +30,8 @@ const MERMAID_JS: &str = include_str!("../assets/mermaid.min.js");
 static FILE_PATH: OnceLock<Mutex<PathBuf>> = OnceLock::new();
 static NEEDS_RELOAD: AtomicBool = AtomicBool::new(false);
 
-fn get_file_path() -> PathBuf {
-    FILE_PATH
-        .get()
-        .expect("FILE_PATH should be set")
-        .lock()
-        .unwrap()
-        .clone()
+fn get_file_path() -> Option<PathBuf> {
+    FILE_PATH.get().map(|m| m.lock().unwrap().clone())
 }
 
 fn set_file_path(path: PathBuf) {
@@ -123,11 +118,15 @@ fn render_markdown(markdown: &str) -> String {
 }
 
 fn load_and_render() -> String {
-    let path = get_file_path();
-    let markdown = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        format!("# Error\n\nFailed to read `{}`: {}", path.display(), e)
-    });
-    render_markdown(&markdown)
+    match get_file_path() {
+        Some(path) => {
+            let markdown = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                format!("# Error\n\nFailed to read `{}`: {}", path.display(), e)
+            });
+            render_markdown(&markdown)
+        }
+        None => render_markdown("*Open a file with* **File → Open** *(⌘O)*"),
+    }
 }
 
 // ── App Delegate ──────────────────────────────────────────────────────
@@ -180,7 +179,8 @@ define_class!(
             window.center();
 
             let title = get_file_path()
-                .file_name()
+                .as_deref()
+                .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
                 .unwrap_or("mdview")
                 .to_string();
@@ -190,8 +190,11 @@ define_class!(
             // Build menu bar.
             build_menu_bar(mtm);
 
-            // Start file watcher.
-            let debouncer = start_file_watcher();
+            // Start file watcher (only if a file was provided via CLI).
+            if let Some(path) = get_file_path() {
+                let debouncer = start_file_watcher(&path);
+                *self.ivars().debouncer.borrow_mut() = Some(debouncer);
+            }
 
             self.ivars()
                 .window
@@ -201,7 +204,6 @@ define_class!(
                 .web_view
                 .set(web_view)
                 .expect("web_view ivar should not already be set");
-            *self.ivars().debouncer.borrow_mut() = Some(debouncer);
 
             start_reload_timer(self);
         }
@@ -342,11 +344,11 @@ impl AppDelegate {
             window.setTitle(&NSString::from_str(title));
         }
 
+        // Restart file watcher for the new file.
+        let debouncer = start_file_watcher(&path);
+
         // Update the file path and reload.
         set_file_path(path);
-
-        // Restart file watcher for the new file.
-        let debouncer = start_file_watcher();
         *self.ivars().debouncer.borrow_mut() = Some(debouncer);
 
         // Re-render.
@@ -480,8 +482,8 @@ fn build_menu_bar(mtm: MainThreadMarker) {
 
 // ── File Watcher ──────────────────────────────────────────────────────
 
-fn start_file_watcher() -> notify_debouncer_mini::Debouncer<notify::RecommendedWatcher> {
-    let path = get_file_path();
+fn start_file_watcher(path: &PathBuf) -> notify_debouncer_mini::Debouncer<notify::RecommendedWatcher> {
+    let path = path.clone();
 
     let mut debouncer = new_debouncer(Duration::from_millis(200), move |result| match result {
         Ok(_events) => {
@@ -524,13 +526,10 @@ fn start_reload_timer(delegate: &AppDelegate) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: mdview <file.md>");
-        std::process::exit(1);
+    if args.len() >= 2 {
+        let path = std::fs::canonicalize(&args[1]).unwrap_or_else(|_| PathBuf::from(&args[1]));
+        set_file_path(path);
     }
-
-    let path = std::fs::canonicalize(&args[1]).unwrap_or_else(|_| PathBuf::from(&args[1]));
-    set_file_path(path);
 
     let mtm = MainThreadMarker::new().unwrap();
     let app = NSApplication::sharedApplication(mtm);
