@@ -111,21 +111,34 @@ fn render_markdown(markdown: &str) -> String {
         theme: isDark ? 'dark' : 'default'
     }});
 }})();
+
+    // Persist scroll position across live reloads.
+    var savedY = sessionStorage.getItem('mdview_scrollY');
+    if (savedY) {{
+        requestAnimationFrame(function() {{
+            window.scrollTo(0, parseInt(savedY));
+        }});
+    }}
+    window.addEventListener('scroll', function() {{
+        sessionStorage.setItem('mdview_scrollY', window.scrollY.toString());
+    }});
 </script>
 </body>
 </html>"#
     )
 }
 
-fn load_and_render() -> String {
+fn load_and_render() -> Option<String> {
     match get_file_path() {
         Some(path) => {
-            let markdown = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                format!("# Error\n\nFailed to read `{}`: {}", path.display(), e)
-            });
-            render_markdown(&markdown)
+            let markdown = match std::fs::read_to_string(&path) {
+                Ok(s) if s.is_empty() => return None, // Skip: file is mid-save (atomic rename)
+                Ok(s) => s,
+                Err(_) => return None, // Skip: file doesn't exist momentarily
+            };
+            Some(render_markdown(&markdown))
         }
-        None => render_markdown("*Open a file with* **File → Open** *(⌘O)*"),
+        None => Some(render_markdown("*Open a file with* **File → Open** *(⌘O)*")),
     }
 }
 
@@ -171,7 +184,8 @@ define_class!(
             let web_view =
                 unsafe { WKWebView::initWithFrame(WKWebView::alloc(mtm), NSRect::ZERO) };
 
-            let html = load_and_render();
+            let html = load_and_render()
+                .unwrap_or_else(|| render_markdown("*Open a file with* **File → Open** *(⌘O)*"));
             let html_ns = NSString::from_str(&html);
             unsafe { web_view.loadHTMLString_baseURL(&html_ns, None) };
 
@@ -245,30 +259,13 @@ define_class!(
                 return;
             };
 
-            let html = load_and_render();
+            // If the file is unreadable or empty (mid-save), re-flag and retry next tick.
+            let Some(html) = load_and_render() else {
+                NEEDS_RELOAD.store(true, Ordering::Relaxed);
+                return;
+            };
 
-            let html_with_scroll_restore = html.replace(
-                "</body>",
-                r#"<script>
-(function() {
-    var savedY = sessionStorage.getItem('mdview_scrollY');
-    if (savedY) {
-        requestAnimationFrame(function() {
-            window.scrollTo(0, parseInt(savedY));
-            sessionStorage.removeItem('mdview_scrollY');
-        });
-    }
-})();
-</script>
-</body>"#,
-            );
-
-            let save_js = NSString::from_str(
-                "sessionStorage.setItem('mdview_scrollY', window.scrollY.toString())",
-            );
-            unsafe { web_view.evaluateJavaScript_completionHandler(&save_js, None) };
-
-            let html_ns = NSString::from_str(&html_with_scroll_restore);
+            let html_ns = NSString::from_str(&html);
             unsafe { web_view.loadHTMLString_baseURL(&html_ns, None) };
         }
 
@@ -353,9 +350,10 @@ impl AppDelegate {
 
         // Re-render.
         if let Some(web_view) = self.ivars().web_view.get() {
-            let html = load_and_render();
-            let html_ns = NSString::from_str(&html);
-            unsafe { web_view.loadHTMLString_baseURL(&html_ns, None) };
+            if let Some(html) = load_and_render() {
+                let html_ns = NSString::from_str(&html);
+                unsafe { web_view.loadHTMLString_baseURL(&html_ns, None) };
+            }
         }
     }
 }
@@ -483,11 +481,24 @@ fn build_menu_bar(mtm: MainThreadMarker) {
 // ── File Watcher ──────────────────────────────────────────────────────
 
 fn start_file_watcher(path: &PathBuf) -> notify_debouncer_mini::Debouncer<notify::RecommendedWatcher> {
-    let path = path.clone();
+    // Watch the parent directory instead of the file directly.
+    // Many editors (vim, VS Code, etc.) save via write-to-temp + atomic rename,
+    // which replaces the inode and breaks a direct file watch.
+    let file_name = path
+        .file_name()
+        .expect("watched path must have a filename")
+        .to_os_string();
+    let parent = path
+        .parent()
+        .expect("watched path must have a parent directory")
+        .to_path_buf();
 
-    let mut debouncer = new_debouncer(Duration::from_millis(200), move |result| match result {
-        Ok(_events) => {
-            NEEDS_RELOAD.store(true, Ordering::Relaxed);
+    let mut debouncer = new_debouncer(Duration::from_millis(200), move |result: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| match result {
+        Ok(events) => {
+            let relevant = events.iter().any(|e| e.path.file_name() == Some(&file_name));
+            if relevant {
+                NEEDS_RELOAD.store(true, Ordering::Relaxed);
+            }
         }
         Err(err) => {
             eprintln!("File watch error: {err}");
@@ -497,8 +508,8 @@ fn start_file_watcher(path: &PathBuf) -> notify_debouncer_mini::Debouncer<notify
 
     debouncer
         .watcher()
-        .watch(&path, notify::RecursiveMode::NonRecursive)
-        .unwrap_or_else(|e| eprintln!("Failed to watch file: {e}"));
+        .watch(&parent, notify::RecursiveMode::NonRecursive)
+        .unwrap_or_else(|e| eprintln!("Failed to watch directory: {e}"));
 
     debouncer
 }
