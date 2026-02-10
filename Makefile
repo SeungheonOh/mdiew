@@ -15,6 +15,7 @@ install: build
 	mkdir -p "$(CONTENTS)/MacOS" "$(CONTENTS)/Resources"
 	cp target/release/$(APP) "$(CONTENTS)/MacOS/$(APP)"
 	cp bundle/Info.plist "$(CONTENTS)/Info.plist"
+	cp assets/icon.icns "$(CONTENTS)/Resources/icon.icns"
 	codesign --force --sign - "$(APP_DIR)"
 	$(LSREGISTER) -f "$(APP_DIR)"
 	@echo "Installed to $(APP_DIR)"

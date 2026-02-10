@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#6C5CE7"/>
+      <stop offset="100%" stop-color="#4834D4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- macOS squircle background -->
+  <rect x="24" y="24" width="976" height="976" rx="220" ry="220" fill="url(#bg)"/>
+
+  <!-- "md" text filling the icon -->
+  <text x="512" y="545" font-family="-apple-system, SF Pro Rounded, SF Pro Display, Helvetica Neue, Arial, sans-serif" font-weight="800" font-size="520" fill="white" text-anchor="middle" dominant-baseline="central" letter-spacing="-20">md</text>
+</svg>
