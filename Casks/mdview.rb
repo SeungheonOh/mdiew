@@ -1,6 +1,6 @@
 cask "mdview" do
   arch arm: "aarch64", intel: "x86_64"
-  version "0.1.0"
+  version "0.1.1"
   sha256 arm:   "PLACEHOLDER",
          intel: "PLACEHOLDER"
 
